@@ -1,0 +1,418 @@
+// ---------------------------------------------------------------------------
+// Multi-tenant Retail ERP + POS  |  PHASE 1 schema
+// Hiyerarsi: PLATFORM > COMPANY > BRANCH > WAREHOUSE > CASH_REGISTER > USER
+// Tenant izolasyonu: tenant'a ait her tabloda companyId + (companyId, ...) index
+// ---------------------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --------------------------------- ENUMS -----------------------------------
+
+enum PlatformRole {
+  SUPER_ADMIN
+  PLATFORM_SUPPORT
+}
+
+enum CompanyStatus {
+  TRIAL
+  ACTIVE
+  SUSPENDED
+  EXPIRED
+  CANCELLED
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  EXPIRED
+}
+
+enum UserStatus {
+  ACTIVE
+  PASSIVE
+  LOCKED
+}
+
+enum RecordStatus {
+  ACTIVE
+  PASSIVE
+}
+
+enum PermissionEffect {
+  ALLOW
+  DENY
+}
+
+enum ActorType {
+  PLATFORM_USER
+  COMPANY_USER
+  SYSTEM
+}
+
+// ------------------------------ PLATFORM -----------------------------------
+
+model PlatformUser {
+  id           String       @id @default(uuid()) @db.Uuid
+  email        String       @unique
+  fullName     String
+  passwordHash String
+  role         PlatformRole @default(SUPER_ADMIN)
+  status       UserStatus   @default(ACTIVE)
+  lastLoginAt  DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  deletedAt    DateTime?
+
+  @@index([status])
+  @@map("platform_users")
+}
+
+model SubscriptionPlan {
+  id            String  @id @default(uuid()) @db.Uuid
+  code          String  @unique // TRIAL | BASIC | PRO | ENTERPRISE
+  name          String
+  description   String?
+  priceMonthly  Decimal @default(0) @db.Decimal(12, 2)
+  currency      String  @default("TRY")
+  maxUsers      Int     @default(3)
+  maxBranches   Int     @default(1)
+  maxWarehouses Int     @default(2)
+  maxProducts   Int     @default(500)
+  maxStorageMb  Int     @default(512)
+  isActive      Boolean @default(true)
+  sortOrder     Int     @default(0)
+
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  companies     Company[]
+  subscriptions Subscription[]
+
+  @@map("subscription_plans")
+}
+
+// ------------------------------- TENANT ------------------------------------
+
+model Company {
+  id        String @id @default(uuid()) @db.Uuid
+  name      String
+  shortName String
+  slug      String @unique
+
+  taxNumber String?
+  taxOffice String?
+  phone     String?
+  email     String?
+  address   String?
+  website   String?
+  logoUrl   String?
+
+  currency String @default("TRY")
+  country  String @default("TR")
+  locale   String @default("tr")
+
+  status         CompanyStatus @default(TRIAL)
+  trialStartsAt  DateTime?
+  trialEndsAt    DateTime?
+  planId         String?       @db.Uuid
+  plan           SubscriptionPlan? @relation(fields: [planId], references: [id])
+  maxUsers       Int           @default(3)
+  maxBranches    Int           @default(1)
+  maxWarehouses  Int           @default(2)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+  deletedBy String?   @db.Uuid
+
+  settings       CompanySettings?
+  subscriptions  Subscription[]
+  branches       Branch[]
+  warehouses     Warehouse[]
+  cashRegisters  CashRegister[]
+  users          User[]
+  roles          Role[]
+  auditLogs      AuditLog[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("companies")
+}
+
+model CompanySettings {
+  id        String  @id @default(uuid()) @db.Uuid
+  companyId String  @unique @db.Uuid
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  primaryColor   String  @default("#2563eb")
+  secondaryColor String  @default("#0f172a")
+  faviconUrl     String?
+  receiptHeader  String?
+  receiptFooter  String?
+
+  defaultVatRate      Decimal @default(20) @db.Decimal(5, 2)
+  priceIncludesVat    Boolean @default(true)
+  allowNegativeStock  Boolean @default(false)
+  maxDiscountPercent  Decimal @default(10) @db.Decimal(5, 2)
+
+  salePrefix       String @default("SALE")
+  purchasePrefix   String @default("PUR")
+  returnPrefix     String @default("RET")
+  collectionPrefix String @default("COL")
+  cashPrefix       String @default("CASH")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("company_settings")
+}
+
+model Subscription {
+  id        String  @id @default(uuid()) @db.Uuid
+  companyId String  @db.Uuid
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  planId    String  @db.Uuid
+  plan      SubscriptionPlan @relation(fields: [planId], references: [id])
+
+  status     SubscriptionStatus @default(TRIAL)
+  startsAt   DateTime           @default(now())
+  endsAt     DateTime?
+  cancelledAt DateTime?
+  note       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([companyId, status])
+  @@map("subscriptions")
+}
+
+model Branch {
+  id        String  @id @default(uuid()) @db.Uuid
+  companyId String  @db.Uuid
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  code      String
+  name      String
+  phone     String?
+  address   String?
+  manager   String?
+  isDefault Boolean      @default(false)
+  status    RecordStatus @default(ACTIVE)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+  deletedBy String?   @db.Uuid
+
+  warehouses    Warehouse[]
+  cashRegisters CashRegister[]
+  userBranches  UserBranch[]
+
+  @@unique([companyId, code])
+  @@index([companyId, status])
+  @@map("branches")
+}
+
+model Warehouse {
+  id        String  @id @default(uuid()) @db.Uuid
+  companyId String  @db.Uuid
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branchId  String  @db.Uuid
+  branch    Branch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  code      String
+  name      String
+  isDefault Boolean      @default(false)
+  status    RecordStatus @default(ACTIVE)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@unique([companyId, code])
+  @@index([companyId, branchId])
+  @@map("warehouses")
+}
+
+model CashRegister {
+  id        String  @id @default(uuid()) @db.Uuid
+  companyId String  @db.Uuid
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branchId  String  @db.Uuid
+  branch    Branch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  code      String
+  name      String
+  isDefault Boolean      @default(false)
+  status    RecordStatus @default(ACTIVE)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@unique([companyId, code])
+  @@index([companyId, branchId])
+  @@map("cash_registers")
+}
+
+// -------------------------- USERS / RBAC ------------------------------------
+
+model User {
+  id        String  @id @default(uuid()) @db.Uuid
+  companyId String  @db.Uuid
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  email        String
+  username     String?
+  fullName     String
+  phone        String?
+  passwordHash String
+  status       UserStatus @default(ACTIVE)
+
+  maxDiscountPercent Decimal? @db.Decimal(5, 2)
+  lastLoginAt        DateTime?
+  failedLoginCount   Int       @default(0)
+  lockedUntil        DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+  deletedBy String?   @db.Uuid
+
+  userRoles       UserRole[]
+  userPermissions UserPermission[]
+  userBranches    UserBranch[]
+
+  @@unique([companyId, email])
+  @@unique([companyId, username])
+  @@index([companyId, status])
+  @@map("users")
+}
+
+model Permission {
+  id          String @id @default(uuid()) @db.Uuid
+  code        String @unique // ornek: sales.create
+  module      String // sales, products, stock ...
+  description String?
+
+  rolePermissions RolePermission[]
+  userPermissions UserPermission[]
+
+  @@index([module])
+  @@map("permissions")
+}
+
+model Role {
+  id        String  @id @default(uuid()) @db.Uuid
+  companyId String  @db.Uuid
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  code        String // ADMIN, MANAGER, CASHIER ...
+  name        String
+  description String?
+  isSystem    Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  rolePermissions RolePermission[]
+  userRoles       UserRole[]
+
+  @@unique([companyId, code])
+  @@index([companyId])
+  @@map("roles")
+}
+
+model RolePermission {
+  roleId       String     @db.Uuid
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String     @db.Uuid
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleId String @db.Uuid
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+// Kullanici bazli override: rol yetkisini ekler (ALLOW) veya keser (DENY)
+model UserPermission {
+  userId       String           @db.Uuid
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permissionId String           @db.Uuid
+  permission   Permission       @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  effect       PermissionEffect @default(ALLOW)
+
+  @@id([userId, permissionId])
+  @@map("user_permissions")
+}
+
+model UserBranch {
+  userId   String  @db.Uuid
+  user     User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branchId String  @db.Uuid
+  branch   Branch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  isPrimary Boolean @default(false)
+
+  @@id([userId, branchId])
+  @@index([branchId])
+  @@map("user_branches")
+}
+
+// --------------------------------- AUDIT ------------------------------------
+// Audit kayitlari asla guncellenmez / silinmez (append-only).
+
+model AuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  companyId String?  @db.Uuid
+  company   Company? @relation(fields: [companyId], references: [id])
+
+  actorType   ActorType
+  actorId     String?  @db.Uuid
+  actorName   String?
+  impersonated Boolean @default(false)
+
+  action     String // PRODUCT_PRICE_CHANGED, COMPANY_CREATED ...
+  entityType String?
+  entityId   String?
+  oldValue   Json?
+  newValue   Json?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([companyId, createdAt])
+  @@index([action])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+model LoginAttempt {
+  id        String   @id @default(uuid()) @db.Uuid
+  email     String
+  ip        String?
+  success   Boolean
+  reason    String?
+  createdAt DateTime @default(now())
+
+  @@index([email, createdAt])
+  @@index([ip, createdAt])
+  @@map("login_attempts")
+}
